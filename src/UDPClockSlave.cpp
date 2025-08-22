@@ -5,6 +5,30 @@
 
 #define PORT_NUM     7000             // Listening Port = PORT_NUM + _CHANNEL_PARAM
 
+#ifdef ARCH_WIN
+static WORD wVersionRequested = MAKEWORD(2, 2);  // Stuff for WSA functions
+static WSADATA wsaData;                          // Stuff for WSA functions
+typedef int socklen_t;
+#endif
+static int                  server_s = 0;        // Server socket descriptor
+static unsigned long int    noBlock;         // Non-blocking flag
+static struct sockaddr_in   server_addr;     // Server Internet address
+static struct sockaddr_in   client_addr;     // Client Internet address
+static struct timeval       timeout;         // Server timeout
+static socklen_t            addr_len;        // Internet address length
+static char                 in_buf[6];    	 // Input buffer for data
+static int                  retcode;         // Return code
+static int                  iOptVal;         // Socket option value
+static int                  iOptLen;         // Socket option length
+
+static bool                 running;         // Runs only if the socket succeeds
+static bool                 was0;
+
+static int					moduleCount = 0;
+static int 					serverPoolTick = 0;
+static char					serverCmd;
+static char					serverCmdCode;
+
 struct UDPClockSlave : Module {
 	enum ParamIds {
 		_RESTART_BUTTON,
@@ -24,24 +48,7 @@ struct UDPClockSlave : Module {
 		NUM_LIGHTS
 	};
 
-#ifdef ARCH_WIN
-	WORD wVersionRequested = MAKEWORD(2, 2);  // Stuff for WSA functions
-	WSADATA wsaData;                          // Stuff for WSA functions
-	typedef int socklen_t;
-#endif
-	int                  server_s;        // Server socket descriptor
-	unsigned long int    noBlock;         // Non-blocking flag
-	struct sockaddr_in   server_addr;     // Server Internet address
-	struct sockaddr_in   client_addr;     // Client Internet address
-	struct timeval       timeout;         // Server timeout
-	socklen_t            addr_len;        // Internet address length
-	char                 in_buf[1024];    // Input buffer for data
-	int                  retcode;         // Return code
-	int                  iOptVal;         // Socket option value
-	int                  iOptLen;         // Socket option length
-
-	bool                 running;         // Runs only if the socket succeeds
-	bool                 was0;
+	int poolTick;
 
 	dsp::PulseGenerator clockPulse, resetPulse;
 
@@ -64,7 +71,11 @@ struct UDPClockSlave : Module {
 void UDPClockSlave::onAdd() {
 	running = true;
 	was0 = true;
+	poolTick = serverPoolTick;
 	lights[_STATUS_LIGHT].setBrightness(0.0);
+
+	if (++moduleCount > 1)
+		return;
 
 #ifdef ARCH_WIN
 	// Initalize Winsock
@@ -108,6 +119,9 @@ void UDPClockSlave::onAdd() {
 }
 
 void UDPClockSlave::onRemove() {
+	if (--moduleCount > 0)
+		return;
+
 #ifdef ARCH_WIN
 	retcode = closesocket(server_s);
 	WSACleanup();
@@ -131,16 +145,29 @@ void UDPClockSlave::process(const ProcessArgs& args) {
 	if (params[_RESTART_BUTTON].getValue()) {
 		onReset();
 	}
-	retcode = recvfrom(server_s, in_buf, sizeof(in_buf), 0,
-		(struct sockaddr*) &client_addr, &addr_len);
-	if (retcode > 0) {
-		if(in_buf[0] == 'C' && in_buf[5] == (int)params[_CMD_PARAM].getValue()) {
-			clockPulse.trigger(.001);
+
+	if (serverPoolTick < ++poolTick) {
+		retcode = recvfrom(server_s, in_buf, sizeof(in_buf), 0,
+			(struct sockaddr*) &client_addr, &addr_len);
+		if (retcode > 0) {
+			serverCmd = in_buf[0];
+			serverCmdCode = in_buf[5];
+		} else {
+			serverCmd = 0;
 		}
-		if (in_buf[0] == 'R') {
-			resetPulse.trigger(.001);
-		}
+
+		serverPoolTick = poolTick;
+	} else {
+		poolTick = serverPoolTick;
 	}
+
+	if(serverCmd == 'C' && serverCmdCode == (int)params[_CMD_PARAM].getValue()) {
+		clockPulse.trigger(.001);
+	}
+	if (serverCmd == 'R') {
+		resetPulse.trigger(.001);
+	}
+
 	bool cPulse = running && clockPulse.process(1.0 / args.sampleRate);
 	outputs[_CLOCK_OUTPUT].setVoltage(cPulse ? 10.0 : 0.0);
 	bool rPulse = running && resetPulse.process(1.0 / args.sampleRate);
