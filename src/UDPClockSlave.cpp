@@ -8,6 +8,7 @@
 struct UDPClockSlave : Module {
 	enum ParamIds {
 		_RESTART_BUTTON,
+		_CMD_PARAM, // Command number
 		NUM_PARAMS
 	};
 	enum InputIds {
@@ -46,6 +47,9 @@ struct UDPClockSlave : Module {
 
 	UDPClockSlave() {
 		config(NUM_PARAMS, NUM_INPUTS, NUM_OUTPUTS, NUM_LIGHTS);
+
+		ParamQuantity* cmd = configParam(_CMD_PARAM, 0.f, 255.f, 0.f, "CMD");
+		cmd->snapEnabled = true;
 	}
 
 	void onAdd() override;
@@ -130,7 +134,7 @@ void UDPClockSlave::process(const ProcessArgs& args) {
 	retcode = recvfrom(server_s, in_buf, sizeof(in_buf), 0,
 		(struct sockaddr*) &client_addr, &addr_len);
 	if (retcode > 0) {
-		if(in_buf[0] == 'C') {
+		if(in_buf[0] == 'C' && in_buf[5] == (int)params[_CMD_PARAM].getValue()) {
 			clockPulse.trigger(.001);
 		}
 		if (in_buf[0] == 'R') {
@@ -150,6 +154,9 @@ struct UDPClockSlaveWidget : ModuleWidget {
 		SvgWidget* panel = createWidget<SvgWidget>(Vec(0, 0));
 		panel->setSvg(APP->window->loadSvg(asset::plugin(pluginInstance, "res/UDPClockSlave.svg")));
 		addChild(panel);
+		
+		// Knobs
+		addParam(createParamCentered<_Knob>(mm2px(Vec(5.011, 50.0)), module, UDPClockSlave::_CMD_PARAM));
 
 		// Screws
 		addChild(createWidget<_Screw>(Vec(0, 0)));
